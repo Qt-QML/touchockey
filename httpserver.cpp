@@ -23,6 +23,8 @@
 #include "httpserver.h"
 
 #include <QTcpSocket>
+#include <QSslSocket>
+#include <QSslConfiguration>
 
 HttpConnection::HttpConnection(QTcpSocket *socket)
     : m_socket(socket)
@@ -39,7 +41,9 @@ HttpConnection::~HttpConnection()
 void HttpConnection::onReadyRead()
 {
     while (m_socket->bytesAvailable()) {
-        m_buffer += m_socket->read(512);
+        QByteArray tmp = m_socket->read(512);
+        m_buffer += tmp;
+        conversation += tmp;
         if (state < State::Body) {
             int crPos = m_buffer.indexOf('\r');
             while (crPos > -1 && crPos + 1 < m_buffer.size() && m_buffer[crPos + 1] == '\n') {
@@ -56,8 +60,16 @@ void HttpConnection::onReadyRead()
             }
         }
         if (state == State::Body) {
-            if (m_buffer.size() >= m_request.header(QNetworkRequest::ContentLengthHeader).toLongLong()) {
+            uint64_t contentLength = m_request.header(QNetworkRequest::ContentLengthHeader).toLongLong();
+            if (m_buffer.size() >= contentLength) {
+                m_body = m_buffer.left(contentLength);
+                m_buffer.remove(0, contentLength);
+
                 emit requestReady();
+                if (!m_socket->isOpen())
+                    deleteLater();
+                else
+                    state = State::ParsingRequestLine;
                 return;
             }
         }
@@ -95,9 +107,45 @@ void HttpServer::onNewConnection()
     connect(connection, &HttpConnection::requestReady, this, &HttpServer::onRequestReady);
 }
 
+void HttpServer::incomingConnection(qintptr socket)
+{
+    // return QTcpServer::incomingConnection(socket);
+
+    QSslSocket *pSslSocket = new QSslSocket();
+
+    if (Q_LIKELY(pSslSocket)) {
+        pSslSocket->setSslConfiguration(QSslConfiguration::defaultConfiguration());
+
+        if (Q_LIKELY(pSslSocket->setSocketDescriptor(socket))) {
+            connect(pSslSocket, &QSslSocket::peerVerifyError, [](const QSslError &error){
+                qDebug() << __func__ << error;
+            });
+
+            typedef void (QSslSocket::* sslErrorsSignal)(const QList<QSslError> &);
+            connect(pSslSocket, static_cast<sslErrorsSignal>(&QSslSocket::sslErrors),  [](const QList<QSslError> &errors){
+                qDebug() << __func__ << errors;
+            });
+            // connect(pSslSocket, &QSslSocket::encrypted,  []{
+            //     qDebug() << __func__ << "QSslSocket::encrypted!!";
+            // });
+
+            addPendingConnection(pSslSocket);
+
+            pSslSocket->setProtocol(QSsl::AnyProtocol);
+            pSslSocket->setLocalCertificate("cert.pem");
+            pSslSocket->setPrivateKey("key.pem");
+
+            pSslSocket->startServerEncryption();
+        } else {
+            qFatal("NNNNNNNOOOOOO!");
+           delete pSslSocket;
+        }
+    }
+}
+
+
 void HttpServer::onRequestReady()
 {
     auto *connection = static_cast<HttpConnection*>(sender());
-    emit normalHttpRequest(connection->method(), connection->request(), connection->body(), connection->takeSocket());
-    delete connection;
+    emit normalHttpRequest(connection->method(), connection->request(), connection->body(), connection->socket(), connection);
 }

@@ -33,10 +33,11 @@ public:
     HttpConnection(QTcpSocket *socket);
     ~HttpConnection();
 
-    QTcpSocket *takeSocket() { return m_socket.release(); }
+    QTcpSocket *socket() { return m_socket.get(); }
     QByteArray method() const { return m_method; }
     QNetworkRequest request() const { return m_request; }
-    QByteArray body() const { return m_buffer; }
+    QByteArray body() const { return m_body; }
+    QByteArray conversation;
 
 signals:
     void requestReady();
@@ -57,6 +58,7 @@ private:
     QByteArray m_method;
     QNetworkRequest m_request;
     QByteArray m_buffer;
+    QByteArray m_body;
 };
 
 class HttpServer : public QTcpServer {
@@ -65,7 +67,10 @@ public:
     HttpServer();
 
 signals:
-    void normalHttpRequest(const QByteArray &method, const QNetworkRequest &request, const QByteArray &body, QTcpSocket *connection);
+    void normalHttpRequest(const QByteArray &method, const QNetworkRequest &request, const QByteArray &body, QTcpSocket *connection, HttpConnection*);
+
+protected:
+    virtual void incomingConnection(qintptr socket) override;
 
 private slots:
     void onNewConnection();
